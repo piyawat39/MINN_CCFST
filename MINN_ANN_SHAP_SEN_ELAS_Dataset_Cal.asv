@@ -1,0 +1,756 @@
+%% ============================================================
+% Compare Sensitivity, Elasticity and SHAP between ANN and MINN
+% Separate TRAIN and TEST data
+% Sensitivity/Elasticity using Forward +1% input increase
+% Export results to Excel
+%% ============================================================
+
+clear; clc; close all;
+
+annModelFile  = 'cfst_model_N_S_ANN.mat';
+minnModelFile = 'cfst_model_N_S_MINN_ver2.mat';
+
+trainFile = 'N_S_Training_DATASET_75.xlsx';
+testFile  = 'N_S_Testing_DATASET_25.xlsx';
+outDir = 'SHAP_SEN_ELAS_Dataset';
+outExcel = fullfile(outDir, ...
+    'ANN_MINN_Sensitivity_Elasticity_SHAP_Train_Test_ver2.xlsx');
+
+outDir = 'SHAP_SEN_ELAS_Dataset';
+
+if ~exist(outDir,'dir')
+    mkdir(outDir);
+end
+
+fontName = 'Times New Roman';
+fontSize = 12;
+
+doExportFigure = true;
+outDPI = 1200;
+
+% ใช้ Forward +1% เหมือน Python Tree model
+relStep_default = 0.01;
+
+% SHAP permutation
+nPermSHAP = 100;   % ถ้าช้า ลดเป็น 50 ได้
+
+rng(500);
+
+%% ---------------- LOAD DATA ----------------
+Ttr = readtable(trainFile,'VariableNamingRule','preserve');
+Tte = readtable(testFile ,'VariableNamingRule','preserve');
+
+Ttr.Properties.VariableNames = matlab.lang.makeValidName( ...
+    strtrim(Ttr.Properties.VariableNames));
+
+Tte.Properties.VariableNames = matlab.lang.makeValidName( ...
+    strtrim(Tte.Properties.VariableNames));
+
+%% ---------------- LOAD MODELS ----------------
+ANN  = load(annModelFile);
+MINN = load(minnModelFile);
+
+checkModelFields(ANN,  'ANN');
+checkModelFields(MINN, 'MINN');
+
+nFeat_ANN  = numel(ANN.muX);
+nFeat_MINN = numel(MINN.muX);
+
+if nFeat_ANN ~= nFeat_MINN
+    error('ANN and MINN have different numbers of input features.');
+end
+
+nFeat = nFeat_ANN;
+
+if ~(nFeat == 5 || nFeat == 6)
+    error('This script supports only 5-input or 6-input models.');
+end
+
+fprintf('Number of input features = %d\n', nFeat);
+
+%% ---------------- BUILD TRAIN INPUT ----------------
+[tblX_train, featShow] = buildFeatureTable_auto(Ttr, nFeat);
+tblX_train = rmmissing(tblX_train);
+Xtrain = table2array(tblX_train);
+
+%% ---------------- BUILD TEST INPUT ----------------
+[tblX_test, ~] = buildFeatureTable_auto(Tte, nFeat);
+tblX_test = rmmissing(tblX_test);
+Xtest = table2array(tblX_test);
+
+fprintf('Train rows used = %d\n', size(Xtrain,1));
+fprintf('Test rows used  = %d\n', size(Xtest,1));
+
+disp('Feature order used:');
+disp(tblX_train.Properties.VariableNames);
+
+%% ============================================================
+% PREDICTION
+%% ============================================================
+
+fprintf('\nPredicting ANN and MINN outputs...\n');
+
+Y_ANN_train = predictModel_vec( ...
+    Xtrain, ANN.net, ANN.muX(:), ANN.stdX(:), ...
+    ANN.muy, ANN.stdy);
+
+Y_MINN_train = predictModel_vec( ...
+    Xtrain, MINN.net, MINN.muX(:), MINN.stdX(:), ...
+    MINN.muy, MINN.stdy);
+
+Y_ANN_test = predictModel_vec( ...
+    Xtest, ANN.net, ANN.muX(:), ANN.stdX(:), ...
+    ANN.muy, ANN.stdy);
+
+Y_MINN_test = predictModel_vec( ...
+    Xtest, MINN.net, MINN.muX(:), MINN.stdX(:), ...
+    MINN.muy, MINN.stdy);
+
+%% ============================================================
+% SENSITIVITY + ELASTICITY : FORWARD +1%
+%% ============================================================
+
+fprintf('\nCalculating ANN Train sensitivity and elasticity...\n');
+
+[E_ANN_train, dY_ANN_train, pct_ANN_train] = calculateElasticityForward( ...
+    Xtrain, ANN.net, ANN.muX(:), ANN.stdX(:), ...
+    ANN.muy, ANN.stdy, relStep_default);
+
+fprintf('\nCalculating ANN Test sensitivity and elasticity...\n');
+
+[E_ANN_test, dY_ANN_test, pct_ANN_test] = calculateElasticityForward( ...
+    Xtest, ANN.net, ANN.muX(:), ANN.stdX(:), ...
+    ANN.muy, ANN.stdy, relStep_default);
+
+fprintf('\nCalculating MINN Train sensitivity and elasticity...\n');
+
+[E_MINN_train, dY_MINN_train, pct_MINN_train] = calculateElasticityForward( ...
+    Xtrain, MINN.net, MINN.muX(:), MINN.stdX(:), ...
+    MINN.muy, MINN.stdy, relStep_default);
+
+fprintf('\nCalculating MINN Test sensitivity and elasticity...\n');
+
+[E_MINN_test, dY_MINN_test, pct_MINN_test] = calculateElasticityForward( ...
+    Xtest, MINN.net, MINN.muX(:), MINN.stdX(:), ...
+    MINN.muy, MINN.stdy, relStep_default);
+
+%% ============================================================
+% SHAP
+%% ============================================================
+
+fprintf('\nCalculating ANN SHAP for Train data...\n');
+
+SHAP_ANN_train = calculatePermutationSHAP( ...
+    Xtrain, Xtrain, ...
+    ANN.net, ANN.muX(:), ANN.stdX(:), ...
+    ANN.muy, ANN.stdy, nPermSHAP);
+
+fprintf('\nCalculating ANN SHAP for Test data...\n');
+
+SHAP_ANN_test = calculatePermutationSHAP( ...
+    Xtest, Xtrain, ...
+    ANN.net, ANN.muX(:), ANN.stdX(:), ...
+    ANN.muy, ANN.stdy, nPermSHAP);
+
+fprintf('\nCalculating MINN SHAP for Train data...\n');
+
+SHAP_MINN_train = calculatePermutationSHAP( ...
+    Xtrain, Xtrain, ...
+    MINN.net, MINN.muX(:), MINN.stdX(:), ...
+    MINN.muy, MINN.stdy, nPermSHAP);
+
+fprintf('\nCalculating MINN SHAP for Test data...\n');
+
+SHAP_MINN_test = calculatePermutationSHAP( ...
+    Xtest, Xtrain, ...
+    MINN.net, MINN.muX(:), MINN.stdX(:), ...
+    MINN.muy, MINN.stdy, nPermSHAP);
+
+%% ============================================================
+% PREDICTION TABLES
+%% ============================================================
+
+Tpred_ANN_train = tblX_train;
+Tpred_ANN_train.Predicted_Nu = Y_ANN_train;
+
+Tpred_ANN_test = tblX_test;
+Tpred_ANN_test.Predicted_Nu = Y_ANN_test;
+
+Tpred_MINN_train = tblX_train;
+Tpred_MINN_train.Predicted_Nu = Y_MINN_train;
+
+Tpred_MINN_test = tblX_test;
+Tpred_MINN_test.Predicted_Nu = Y_MINN_test;
+
+%% ============================================================
+% SUMMARY TABLES
+%% ============================================================
+
+ANN_SenElas_Train = createSenElasSummary( ...
+    featShow, dY_ANN_train, pct_ANN_train, E_ANN_train, ...
+    'ANN', 'Train', relStep_default);
+
+ANN_SenElas_Test = createSenElasSummary( ...
+    featShow, dY_ANN_test, pct_ANN_test, E_ANN_test, ...
+    'ANN', 'Test', relStep_default);
+
+MINN_SenElas_Train = createSenElasSummary( ...
+    featShow, dY_MINN_train, pct_MINN_train, E_MINN_train, ...
+    'MINN', 'Train', relStep_default);
+
+MINN_SenElas_Test = createSenElasSummary( ...
+    featShow, dY_MINN_test, pct_MINN_test, E_MINN_test, ...
+    'MINN', 'Test', relStep_default);
+
+All_Sen_Elasticity = [
+    ANN_SenElas_Train;
+    ANN_SenElas_Test;
+    MINN_SenElas_Train;
+    MINN_SenElas_Test
+];
+
+%% ============================================================
+% RAW TABLES
+%% ============================================================
+
+Sensitivity_ANN_Train = array2table(dY_ANN_train, ...
+    'VariableNames', matlab.lang.makeValidName(featShow));
+Sensitivity_ANN_Test = array2table(dY_ANN_test, ...
+    'VariableNames', matlab.lang.makeValidName(featShow));
+
+Sensitivity_MINN_Train = array2table(dY_MINN_train, ...
+    'VariableNames', matlab.lang.makeValidName(featShow));
+Sensitivity_MINN_Test = array2table(dY_MINN_test, ...
+    'VariableNames', matlab.lang.makeValidName(featShow));
+
+OutputChange_ANN_Train = array2table(pct_ANN_train, ...
+    'VariableNames', matlab.lang.makeValidName(featShow));
+OutputChange_ANN_Test = array2table(pct_ANN_test, ...
+    'VariableNames', matlab.lang.makeValidName(featShow));
+
+OutputChange_MINN_Train = array2table(pct_MINN_train, ...
+    'VariableNames', matlab.lang.makeValidName(featShow));
+OutputChange_MINN_Test = array2table(pct_MINN_test, ...
+    'VariableNames', matlab.lang.makeValidName(featShow));
+
+Elasticity_ANN_Train = array2table(E_ANN_train, ...
+    'VariableNames', matlab.lang.makeValidName(featShow));
+Elasticity_ANN_Test = array2table(E_ANN_test, ...
+    'VariableNames', matlab.lang.makeValidName(featShow));
+
+Elasticity_MINN_Train = array2table(E_MINN_train, ...
+    'VariableNames', matlab.lang.makeValidName(featShow));
+Elasticity_MINN_Test = array2table(E_MINN_test, ...
+    'VariableNames', matlab.lang.makeValidName(featShow));
+
+%% ============================================================
+% SHAP TABLES
+%% ============================================================
+
+SHAP_ANN_Train_Table = array2table(SHAP_ANN_train, ...
+    'VariableNames', matlab.lang.makeValidName(featShow));
+SHAP_ANN_Test_Table = array2table(SHAP_ANN_test, ...
+    'VariableNames', matlab.lang.makeValidName(featShow));
+
+SHAP_MINN_Train_Table = array2table(SHAP_MINN_train, ...
+    'VariableNames', matlab.lang.makeValidName(featShow));
+SHAP_MINN_Test_Table = array2table(SHAP_MINN_test, ...
+    'VariableNames', matlab.lang.makeValidName(featShow));
+
+ANN_SHAP_Summary_Train = createSHAPSummary( ...
+    featShow, SHAP_ANN_train, 'ANN', 'Train');
+
+ANN_SHAP_Summary_Test = createSHAPSummary( ...
+    featShow, SHAP_ANN_test, 'ANN', 'Test');
+
+MINN_SHAP_Summary_Train = createSHAPSummary( ...
+    featShow, SHAP_MINN_train, 'MINN', 'Train');
+
+MINN_SHAP_Summary_Test = createSHAPSummary( ...
+    featShow, SHAP_MINN_test, 'MINN', 'Test');
+
+All_SHAP_Summary = [
+    ANN_SHAP_Summary_Train;
+    ANN_SHAP_Summary_Test;
+    MINN_SHAP_Summary_Train;
+    MINN_SHAP_Summary_Test
+];
+
+%% ============================================================
+% ALL SUMMARY
+%% ============================================================
+
+All_Summary = table( ...
+    featShow(:), ...
+    mean(abs(dY_ANN_train),1,'omitnan')', ...
+    mean(abs(dY_ANN_test),1,'omitnan')', ...
+    mean(abs(dY_MINN_train),1,'omitnan')', ...
+    mean(abs(dY_MINN_test),1,'omitnan')', ...
+    mean(abs(pct_ANN_train),1,'omitnan')', ...
+    mean(abs(pct_ANN_test),1,'omitnan')', ...
+    mean(abs(pct_MINN_train),1,'omitnan')', ...
+    mean(abs(pct_MINN_test),1,'omitnan')', ...
+    mean(abs(E_ANN_train),1,'omitnan')', ...
+    mean(abs(E_ANN_test),1,'omitnan')', ...
+    mean(abs(E_MINN_train),1,'omitnan')', ...
+    mean(abs(E_MINN_test),1,'omitnan')', ...
+    mean(abs(SHAP_ANN_train),1,'omitnan')', ...
+    mean(abs(SHAP_ANN_test),1,'omitnan')', ...
+    mean(abs(SHAP_MINN_train),1,'omitnan')', ...
+    mean(abs(SHAP_MINN_test),1,'omitnan')', ...
+    'VariableNames', { ...
+    'Feature', ...
+    'ANN_Train_MeanAbsSensitivity', ...
+    'ANN_Test_MeanAbsSensitivity', ...
+    'MINN_Train_MeanAbsSensitivity', ...
+    'MINN_Test_MeanAbsSensitivity', ...
+    'ANN_Train_MeanAbsOutputChangePercent', ...
+    'ANN_Test_MeanAbsOutputChangePercent', ...
+    'MINN_Train_MeanAbsOutputChangePercent', ...
+    'MINN_Test_MeanAbsOutputChangePercent', ...
+    'ANN_Train_MeanAbsElasticity', ...
+    'ANN_Test_MeanAbsElasticity', ...
+    'MINN_Train_MeanAbsElasticity', ...
+    'MINN_Test_MeanAbsElasticity', ...
+    'ANN_Train_MeanAbsSHAP', ...
+    'ANN_Test_MeanAbsSHAP', ...
+    'MINN_Train_MeanAbsSHAP', ...
+    'MINN_Test_MeanAbsSHAP' ...
+    });
+
+%% ============================================================
+% EXPORT TO EXCEL
+%% ============================================================
+
+if isfile(outExcel)
+    delete(outExcel);
+end
+
+writetable(All_Sen_Elasticity, outExcel, 'Sheet','All_Sen_Elasticity');
+writetable(All_SHAP_Summary,  outExcel, 'Sheet','All_SHAP_Summary');
+writetable(All_Summary,       outExcel, 'Sheet','All_Summary');
+
+writetable(Tpred_ANN_train,  outExcel, 'Sheet','ANN_Train');
+writetable(Tpred_ANN_test,   outExcel, 'Sheet','ANN_Test');
+writetable(Tpred_MINN_train, outExcel, 'Sheet','MINN_Train');
+writetable(Tpred_MINN_test,  outExcel, 'Sheet','MINN_Test');
+
+writetable(ANN_SenElas_Train,  outExcel, 'Sheet','ANN_SenElas_Train');
+writetable(ANN_SenElas_Test,   outExcel, 'Sheet','ANN_SenElas_Test');
+writetable(MINN_SenElas_Train, outExcel, 'Sheet','MINN_SenElas_Train');
+writetable(MINN_SenElas_Test,  outExcel, 'Sheet','MINN_SenElas_Test');
+
+writetable(Sensitivity_ANN_Train,  outExcel, 'Sheet','ANN_Sensitivity_Train');
+writetable(Sensitivity_ANN_Test,   outExcel, 'Sheet','ANN_Sensitivity_Test');
+writetable(Sensitivity_MINN_Train, outExcel, 'Sheet','MINN_Sensitivity_Train');
+writetable(Sensitivity_MINN_Test,  outExcel, 'Sheet','MINN_Sensitivity_Test');
+
+writetable(OutputChange_ANN_Train,  outExcel, 'Sheet','ANN_OutputChange_Train');
+writetable(OutputChange_ANN_Test,   outExcel, 'Sheet','ANN_OutputChange_Test');
+writetable(OutputChange_MINN_Train, outExcel, 'Sheet','MINN_OutputChange_Train');
+writetable(OutputChange_MINN_Test,  outExcel, 'Sheet','MINN_OutputChange_Test');
+
+writetable(Elasticity_ANN_Train,  outExcel, 'Sheet','ANN_Elasticity_Train');
+writetable(Elasticity_ANN_Test,   outExcel, 'Sheet','ANN_Elasticity_Test');
+writetable(Elasticity_MINN_Train, outExcel, 'Sheet','MINN_Elasticity_Train');
+writetable(Elasticity_MINN_Test,  outExcel, 'Sheet','MINN_Elasticity_Test');
+
+writetable(SHAP_ANN_Train_Table,  outExcel, 'Sheet','ANN_SHAP_Train');
+writetable(SHAP_ANN_Test_Table,   outExcel, 'Sheet','ANN_SHAP_Test');
+writetable(SHAP_MINN_Train_Table, outExcel, 'Sheet','MINN_SHAP_Train');
+writetable(SHAP_MINN_Test_Table,  outExcel, 'Sheet','MINN_SHAP_Test');
+
+fprintf('\n✅ Exported Excel Successfully: %s\n', outExcel);
+
+%% ============================================================
+% FIGURES
+%% ============================================================
+
+plotGroupedBar(featShow, ...
+    mean(abs(E_ANN_train),1,'omitnan')', ...
+    mean(abs(E_MINN_train),1,'omitnan')', ...
+    'Mean Absolute Elasticity of Training Data', ...
+    'Mean absolute elasticity', ...
+    'Train_MeanAbsElasticity_ANN_MINN.png', ...
+    fontName, fontSize, outDPI, doExportFigure,outDir);
+
+plotGroupedBar(featShow, ...
+    mean(abs(E_ANN_test),1,'omitnan')', ...
+    mean(abs(E_MINN_test),1,'omitnan')', ...
+    'Mean Absolute Elasticity of Testing Data', ...
+    'Mean absolute elasticity', ...
+    'Test_MeanAbsElasticity_ANN_MINN.png', ...
+    fontName, fontSize, outDPI, doExportFigure,outDir);
+
+plotGroupedBar(featShow, ...
+    mean(abs(SHAP_ANN_train),1,'omitnan')', ...
+    mean(abs(SHAP_MINN_train),1,'omitnan')', ...
+    'SHAP Importance of Training Data', ...
+    'Mean absolute SHAP value', ...
+    'Train_SHAP_ANN_MINN.png', ...
+    fontName, fontSize, outDPI, doExportFigure,outDir);
+
+plotGroupedBar(featShow, ...
+    mean(abs(SHAP_ANN_test),1,'omitnan')', ...
+    mean(abs(SHAP_MINN_test),1,'omitnan')', ...
+    'SHAP Importance of Testing Data', ...
+    'Mean absolute SHAP value', ...
+    'Test_SHAP_ANN_MINN.png', ...
+    fontName, fontSize, outDPI, doExportFigure,outDir);
+
+disp('Done.');
+
+%% ============================================================
+% LOCAL FUNCTIONS
+%% ============================================================
+
+function checkModelFields(S, modelName)
+
+    if ~isfield(S,'net')
+        error('%s model file has no variable "net".', modelName);
+    end
+
+    requiredFields = {'muX','stdX','muy','stdy'};
+
+    for k = 1:numel(requiredFields)
+        if ~isfield(S, requiredFields{k})
+            error('%s model file missing variable "%s".', ...
+                modelName, requiredFields{k});
+        end
+    end
+end
+
+function [tblX, featShow] = buildFeatureTable_auto(T, nFeat)
+
+    V = string(T.Properties.VariableNames);
+
+    if ~any(V=="D")
+        error('Missing column D');
+    end
+
+    if ~any(V=="t")
+        error('Missing column t');
+    end
+
+    D = T.D;
+    t = T.t;
+
+    if any(V=="Fy")
+        Fy = T.Fy;
+    elseif any(V=="fy")
+        Fy = T.fy;
+    else
+        error('Missing Fy or fy column');
+    end
+
+    if any(V=="Fc")
+        Fc = T.Fc;
+    elseif any(V=="fc")
+        Fc = T.fc;
+    elseif any(V=="fcu")
+        Fc = T.fcu;
+    else
+        error('Missing Fc, fc, or fcu column');
+    end
+
+    if any(V=="L_D")
+        LD = T.L_D;
+    elseif any(V=="LD")
+        LD = T.LD;
+    elseif any(V=="LoverD")
+        LD = T.LoverD;
+    elseif any(V=="L_over_D")
+        LD = T.L_over_D;
+    else
+        error('Missing L/D column.');
+    end
+
+    if nFeat == 5
+        tblX = table(D, t, Fy, Fc, LD, ...
+            'VariableNames', {'D','t','Fy','Fc','L_D'});
+
+        featShow = {'D','t','f_y','f_c','L/D'};
+        return
+    end
+
+    if any(V=="e_r0")
+        er = T.e_r0;
+    elseif any(V=="e_r")
+        er = T.e_r;
+    elseif any(V=="er")
+        er = T.er;
+    elseif any(V=="E_R0")
+        er = T.E_R0;
+    elseif any(V=="E_R")
+        er = T.E_R;
+    else
+        error('nFeat = 6 requires e/r column.');
+    end
+
+    tblX = table(D, t, Fy, Fc, LD, er, ...
+        'VariableNames', {'D','t','Fy','Fc','L_D','e_r0'});
+
+    featShow = {'D','t','f_y','f_c','L/D','e/r'};
+end
+
+function [E, dY, percentChange] = calculateElasticityForward( ...
+    X, net, muX, stdX, muy, stdy, relStep_default)
+
+    n = size(X,1);
+    nFeat = size(X,2);
+
+    E = nan(n,nFeat);
+    dY = nan(n,nFeat);
+    percentChange = nan(n,nFeat);
+
+    Y0 = predictModel_vec(X, net, muX, stdX, muy, stdy);
+
+    fprintf('Predicted output range: %.4f to %.4f\n', ...
+        min(Y0,[],'omitnan'), max(Y0,[],'omitnan'));
+
+    for i = 1:n
+
+        xi = X(i,:);
+        f0 = Y0(i);
+
+        if ~isfinite(f0) || f0 == 0
+            continue
+        end
+
+        for j = 1:nFeat
+
+            delta_x = xi(j) * relStep_default;
+
+            if delta_x == 0 || ~isfinite(delta_x)
+                continue
+            end
+
+            x_plus = xi;
+            x_plus(j) = xi(j) * (1 + relStep_default);
+
+            if nFeat >= 2
+                if x_plus(1) <= 2*x_plus(2)
+                    x_plus(1) = 2*x_plus(2) + 1e-6;
+                end
+            end
+
+            f_plus = predictModel_single( ...
+                x_plus, net, muX, stdX, muy, stdy);
+
+            if ~isfinite(f_plus)
+                continue
+            end
+
+            delta_y = f_plus - f0;
+
+            dY(i,j) = delta_y / delta_x;
+
+            percentChange(i,j) = (delta_y / f0) * 100;
+
+            E(i,j) = percentChange(i,j) / (relStep_default * 100);
+        end
+    end
+end
+
+function Tsummary = createSenElasSummary( ...
+    featShow, dY, percentChange, E, modelName, dataName, relStep_default)
+
+    Tsummary = table( ...
+        repmat({modelName}, numel(featShow), 1), ...
+        repmat({dataName}, numel(featShow), 1), ...
+        featShow(:), ...
+        repmat(relStep_default*100, numel(featShow), 1), ...
+        mean(dY,1,'omitnan')', ...
+        median(dY,1,'omitnan')', ...
+        std(dY,0,1,'omitnan')', ...
+        min(dY,[],1,'omitnan')', ...
+        max(dY,[],1,'omitnan')', ...
+        mean(percentChange,1,'omitnan')', ...
+        median(percentChange,1,'omitnan')', ...
+        std(percentChange,0,1,'omitnan')', ...
+        min(percentChange,[],1,'omitnan')', ...
+        max(percentChange,[],1,'omitnan')', ...
+        mean(E,1,'omitnan')', ...
+        median(E,1,'omitnan')', ...
+        std(E,0,1,'omitnan')', ...
+        min(E,[],1,'omitnan')', ...
+        max(E,[],1,'omitnan')', ...
+        abs(mean(dY,1,'omitnan'))', ...
+        abs(mean(E,1,'omitnan'))', ...
+        'VariableNames', { ...
+        'Model', ...
+        'Data', ...
+        'Variable', ...
+        'Input_Change_%', ...
+        'Mean_Sensitivity', ...
+        'Median_Sensitivity', ...
+        'Std_Sensitivity', ...
+        'Min_Sensitivity', ...
+        'Max_Sensitivity', ...
+        'Mean_Output_Change_%', ...
+        'Median_Output_Change_%', ...
+        'Std_Output_Change_%', ...
+        'Min_Output_Change_%', ...
+        'Max_Output_Change_%', ...
+        'Mean_Elasticity', ...
+        'Median_Elasticity', ...
+        'Std_Elasticity', ...
+        'Min_Elasticity', ...
+        'Max_Elasticity', ...
+        'Abs_Mean_Sensitivity', ...
+        'Abs_Mean_Elasticity' ...
+        });
+
+    Tsummary.Sensitivity_Rank = tiedrank(-Tsummary.Abs_Mean_Sensitivity);
+    Tsummary.Elasticity_Rank  = tiedrank(-Tsummary.Abs_Mean_Elasticity);
+
+    Tsummary = sortrows(Tsummary, 'Abs_Mean_Elasticity', 'descend');
+end
+
+function Tshap = createSHAPSummary(featShow, SHAP, modelName, dataName)
+
+    Tshap = table( ...
+        repmat({modelName}, numel(featShow), 1), ...
+        repmat({dataName}, numel(featShow), 1), ...
+        featShow(:), ...
+        mean(SHAP,1,'omitnan')', ...
+        mean(abs(SHAP),1,'omitnan')', ...
+        std(SHAP,0,1,'omitnan')', ...
+        min(SHAP,[],1,'omitnan')', ...
+        max(SHAP,[],1,'omitnan')', ...
+        'VariableNames', { ...
+        'Model', ...
+        'Data', ...
+        'Variable', ...
+        'Mean_SHAP', ...
+        'Mean_Abs_SHAP', ...
+        'Std_SHAP', ...
+        'Min_SHAP', ...
+        'Max_SHAP' ...
+        });
+
+    Tshap.SHAP_Rank = tiedrank(-Tshap.Mean_Abs_SHAP);
+
+    Tshap = sortrows(Tshap, 'Mean_Abs_SHAP', 'descend');
+end
+
+function SHAP = calculatePermutationSHAP( ...
+    Xtarget, Xbackground, net, muX, stdX, muy, stdy, nPerm)
+
+    nSample = size(Xtarget,1);
+    nFeat = size(Xtarget,2);
+
+    SHAP = nan(nSample, nFeat);
+
+    basePred = predictModel_vec(Xbackground, net, muX, stdX, muy, stdy);
+    baseline = mean(basePred, 'omitnan');
+
+    fprintf('Baseline prediction = %.4f\n', baseline);
+
+    for i = 1:nSample
+
+        x = Xtarget(i,:);
+        phi = zeros(1,nFeat);
+
+        for p = 1:nPerm
+
+            order = randperm(nFeat);
+
+            xb = Xbackground(randi(size(Xbackground,1)), :);
+
+            x_prev = xb;
+            f_prev = predictModel_single(x_prev, net, muX, stdX, muy, stdy);
+
+            for k = 1:nFeat
+
+                j = order(k);
+
+                x_new = x_prev;
+                x_new(j) = x(j);
+
+                f_new = predictModel_single(x_new, net, muX, stdX, muy, stdy);
+
+                phi(j) = phi(j) + (f_new - f_prev);
+
+                x_prev = x_new;
+                f_prev = f_new;
+            end
+        end
+
+        SHAP(i,:) = phi / nPerm;
+
+        if mod(i,20) == 0
+            fprintf('SHAP progress: %d/%d\n', i, nSample);
+        end
+    end
+end
+
+function y = predictModel_vec(X, net, muX, stdX, muy, stdy)
+
+    n = size(X,1);
+    y = nan(n,1);
+
+    for i = 1:n
+        y(i) = predictModel_single(X(i,:), net, muX, stdX, muy, stdy);
+    end
+end
+
+function y = predictModel_single(x, net, muX, stdX, muy, stdy)
+
+    x = double(x(:))';
+
+    xn = (x - muX.') ./ stdX.';
+
+    try
+        if isa(net,'dlnetwork')
+            dlX = dlarray(xn','CB');
+            dlY = forward(net, dlX);
+            yhat_n = extractdata(dlY)';
+        else
+            yhat_n = predict(net, xn);
+        end
+    catch
+        yhat_n = predict(net, xn);
+    end
+
+    y = double(yhat_n) * stdy + muy;
+end
+
+function plotGroupedBar(featShow, y1, y2, figTitle, ...
+    yLabelText, outName, ...
+    fontName, fontSize, outDPI, doExportFigure, outDir)
+
+    figure('Color','w');
+    set(gcf,'Units','centimeters','Position',[5 5 18 10]);
+
+    Xbar = [y1, y2];
+
+    bar(Xbar,'grouped');
+
+    set(gca,'FontName',fontName,'FontSize',fontSize);
+    xticks(1:numel(featShow));
+    xticklabels(featShow);
+
+    ylabel(yLabelText, ...
+        'FontName',fontName,'FontSize',fontSize);
+
+    xlabel('Input variables', ...
+        'FontName',fontName,'FontSize',fontSize);
+
+    title(figTitle, ...
+        'FontName',fontName,'FontSize',fontSize);
+
+    legend({'ANN','PINN'}, ...
+        'Location','northwest', ...
+        'FontName',fontName, ...
+        'FontSize',fontSize);
+
+    grid on;
+    box off;
+    set(gca,'TickDir','out');
+
+    if doExportFigure
+        exportgraphics(gcf, fullfile(outDir,outName), ...
+    'Resolution', outDPI);
+    end
+end
